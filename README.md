@@ -1,2 +1,2 @@
 # libpxl
-A simple (to-be-crossplatform) framebuffer library.
+A simple (to-be-crossplatform, win32 for the moment) framebuffer library.
