@@ -9,18 +9,36 @@
 static const int width = WIDTH;
 static const int height = HEIGHT;
 static uint32_t pixels[WIDTH * HEIGHT];
+static unsigned frame = 0;
+
+void draw(void) {
+    // pixels are 0x00RRGGBB, matching the BI_BITFIELDS masks in the blit below
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            uint8_t r = (uint8_t)(x + frame);
+            uint8_t g = (uint8_t)(y + frame);
+            uint8_t b = (uint8_t)((x + y + frame) >> 1);
+            pixels[y * width + x] = (r << 16) | (g << 8) | b;
+        }
+    }
+    frame++;
+}
 
 LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         // handle events
         case WM_PAINT: {
+                draw();
                 PAINTSTRUCT ps;
                 HDC hdc = BeginPaint(hwnd, &ps);
                 HDC memdc = CreateCompatibleDC(hdc);
                 HBITMAP hbmp = CreateCompatibleBitmap(hdc, width, height);
                 HBITMAP oldbmp = SelectObject(memdc, hbmp);
-                BITMAPINFO bi = {{sizeof(bi), width, -height, 1, 32, BI_BITFIELDS}};
-                bi.bmiColors[0].rgbRed = bi.bmiColors[1].rgbGreen = bi.bmiColors[2].rgbBlue = 0xff;
+                struct {
+                    BITMAPINFOHEADER header;
+                    RGBQUAD colors[3];
+                } bi = {{sizeof(BITMAPINFOHEADER), width, -height, 1, 32, BI_BITFIELDS}};
+                bi.colors[0].rgbRed = bi.colors[1].rgbGreen = bi.colors[2].rgbBlue = 0xff;
                 SetDIBitsToDevice(memdc, 0, 0, width, height, 0, 0, 0, height, pixels, (BITMAPINFO *)&bi, DIB_RGB_COLORS);
                 BitBlt(hdc, 0, 0, width, height, memdc, 0, 0, SRCCOPY);
                 SelectObject(memdc, oldbmp);
@@ -63,5 +81,6 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE prevInstance, LPSTR pCmdLine, i
         TranslateMessage(&msg);
         DispatchMessage(&msg);
     }
+    return 0;
 }
 #endif

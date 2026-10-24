@@ -3,4 +3,4 @@ project(libpxl C)
 
 set(CMAKE_C_STANDARD 99)
 
-add_executable(libpxl main.c)
+add_executable(libpxl WIN32 main.c)
