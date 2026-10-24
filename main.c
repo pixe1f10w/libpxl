@@ -47,6 +47,12 @@ LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 EndPaint(hwnd, &ps);
             }
             break;
+        case WM_CREATE:
+            SetTimer(hwnd, 1, 16, NULL);
+            break;
+        case WM_TIMER:
+            InvalidateRect(hwnd, NULL, FALSE);
+            break;
         case WM_CLOSE:
             DestroyWindow(hwnd);
             break;
