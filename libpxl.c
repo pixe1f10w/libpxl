@@ -7,6 +7,7 @@ static int width;
 static int height;
 static int running;
 static libpxl_draw_fn draw_fn;
+static libpxl_event_fn event_fn;
 
 uint32_t *libpxl_pixels(void) {
     return pixels;
@@ -24,7 +25,7 @@ void libpxl_quit(void) {
     running = 0;
 }
 
-int libpxl_run(const char *title, int width_, int height_, libpxl_draw_fn draw) {
+int libpxl_run(const char *title, int width_, int height_, libpxl_draw_fn draw, libpxl_event_fn event) {
     if (!draw || width_ <= 0 || height_ <= 0) {
         return 1;
     }
@@ -35,6 +36,7 @@ int libpxl_run(const char *title, int width_, int height_, libpxl_draw_fn draw) 
     width = width_;
     height = height_;
     draw_fn = draw;
+    event_fn = event;
     running = 1;
     if (!libpxl_backend_open(title, width, height)) {
         free(pixels);
@@ -42,7 +44,16 @@ int libpxl_run(const char *title, int width_, int height_, libpxl_draw_fn draw) 
         return 1;
     }
     while (running) {
-        if (!libpxl_backend_poll()) {
+        libpxl_event event;
+        while (libpxl_backend_poll(&event)) {
+            if (event.type == LIBPXL_QUIT) {
+                running = 0;
+            }
+            if (event_fn) {
+                event_fn(&event);
+            }
+        }
+        if (!running) {
             break;
         }
         draw_fn();

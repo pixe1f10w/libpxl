@@ -7,8 +7,8 @@
 int libpxl_backend_open(const char *title, int width, int height);
 void libpxl_backend_close(void);
 void libpxl_backend_present(const uint32_t *pixels, int width, int height);
-/* return 0 once the window has been closed */
-int libpxl_backend_poll(void);
+/* fill event, return 1 if one was available, 0 when the queue is empty */
+int libpxl_backend_poll(libpxl_event *event);
 /* sleep for the given number of milliseconds, to pace frames */
 void libpxl_backend_delay(int ms);
 

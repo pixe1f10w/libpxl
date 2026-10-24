@@ -1,8 +1,46 @@
 #include <windows.h>
+#include <windowsx.h>
 #include "libpxl.h"
 #include "libpxl_backend.h"
 
+#define EVENT_QUEUE 32
+
 static HWND window;
+static libpxl_event queue[EVENT_QUEUE];
+static int queue_head;
+static int queue_tail;
+
+static void push_event(const libpxl_event *event) {
+    int next = (queue_tail + 1) % EVENT_QUEUE;
+    if (next == queue_head) {
+        return; /* full: drop */
+    }
+    queue[queue_tail] = *event;
+    queue_tail = next;
+}
+
+static int pop_event(libpxl_event *event) {
+    if (queue_head == queue_tail) {
+        return 0;
+    }
+    *event = queue[queue_head];
+    queue_head = (queue_head + 1) % EVENT_QUEUE;
+    return 1;
+}
+
+static int translate_key(WPARAM key) {
+    switch (key) {
+        case VK_ESCAPE: return LIBPXL_KEY_ESCAPE;
+        case VK_LEFT: return LIBPXL_KEY_LEFT;
+        case VK_RIGHT: return LIBPXL_KEY_RIGHT;
+        case VK_UP: return LIBPXL_KEY_UP;
+        case VK_DOWN: return LIBPXL_KEY_DOWN;
+        default:
+            if (key >= '0' && key <= '9') return (int)key;
+            if (key >= 'A' && key <= 'Z') return (int)key;
+            return LIBPXL_KEY_UNKNOWN;
+    }
+}
 
 static void blit(HDC hdc, const uint32_t *pixels, int width, int height) {
     HDC memdc = CreateCompatibleDC(hdc);
@@ -32,6 +70,38 @@ LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 EndPaint(hwnd, &ps);
             }
             return 0;
+        case WM_KEYDOWN:
+        case WM_KEYUP: {
+            libpxl_event event = {0};
+            event.type = (msg == WM_KEYDOWN) ? LIBPXL_KEYDOWN : LIBPXL_KEYUP;
+            event.key = translate_key(wParam);
+            push_event(&event);
+        }
+            return 0;
+        case WM_LBUTTONDOWN:
+        case WM_MBUTTONDOWN:
+        case WM_RBUTTONDOWN:
+        case WM_LBUTTONUP:
+        case WM_MBUTTONUP:
+        case WM_RBUTTONUP: {
+            libpxl_event event = {0};
+            event.type = (msg == WM_LBUTTONDOWN || msg == WM_MBUTTONDOWN || msg == WM_RBUTTONDOWN)
+                        ? LIBPXL_MOUSEDOWN : LIBPXL_MOUSEUP;
+            event.x = GET_X_LPARAM(lParam);
+            event.y = GET_Y_LPARAM(lParam);
+            event.button = (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP) ? 1
+                         : (msg == WM_MBUTTONDOWN || msg == WM_MBUTTONUP) ? 2 : 3;
+            push_event(&event);
+        }
+            return 0;
+        case WM_MOUSEMOVE: {
+            libpxl_event event = {0};
+            event.type = LIBPXL_MOUSEMOVE;
+            event.x = GET_X_LPARAM(lParam);
+            event.y = GET_Y_LPARAM(lParam);
+            push_event(&event);
+        }
+            return 0;
         case WM_CLOSE:
             DestroyWindow(window);
             return 0;
@@ -56,8 +126,8 @@ int libpxl_backend_open(const char *title, int width, int height) {
         return 0;
     }
     window = CreateWindowEx(WS_EX_CLIENTEDGE, "libpxl", title,
-                          WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
-                          width, height, NULL, NULL, instance, NULL);
+                            WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
+                            width, height, NULL, NULL, instance, NULL);
     if (!window) {
         return 0;
     }
@@ -79,16 +149,24 @@ void libpxl_backend_present(const uint32_t *pixels, int width, int height) {
     ReleaseDC(window, hdc);
 }
 
-int libpxl_backend_poll(void) {
-    MSG msg;
-    while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
-        if (msg.message == WM_QUIT) {
+int libpxl_backend_poll(libpxl_event *event) {
+    for (;;) {
+        if (pop_event(event)) {
+            return 1;
+        }
+        MSG msg;
+        if (!PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
             return 0;
+        }
+        if (msg.message == WM_QUIT) {
+            libpxl_event quit = {0};
+            quit.type = LIBPXL_QUIT;
+            push_event(&quit);
+            continue;
         }
         TranslateMessage(&msg);
         DispatchMessage(&msg);
     }
-    return 1;
 }
 
 void libpxl_backend_delay(int ms) {

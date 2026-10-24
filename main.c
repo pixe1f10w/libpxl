@@ -6,8 +6,11 @@
 
 #define WIDTH 640
 #define HEIGHT 480
+#define MARKER 8
 
 static unsigned frame = 0;
+static int mouse_x = WIDTH / 2;
+static int mouse_y = HEIGHT / 2;
 
 static void draw(void) {
     int width = libpxl_width();
@@ -21,11 +24,35 @@ static void draw(void) {
             pixels[y * width + x] = (r << 16) | (g << 8) | b;
         }
     }
+    /* white square under the mouse */
+    for (int y = mouse_y - MARKER; y <= mouse_y + MARKER; y++) {
+        for (int x = mouse_x - MARKER; x <= mouse_x + MARKER; x++) {
+            if ((unsigned)x < (unsigned)width && (unsigned)y < (unsigned)height) {
+                pixels[y * width + x] = 0xffffff;
+            }
+        }
+    }
     frame++;
 }
 
+static void input(const libpxl_event *event) {
+    switch (event->type) {
+        case LIBPXL_KEYDOWN:
+            if (event->key == LIBPXL_KEY_ESCAPE) {
+                libpxl_quit();
+            }
+            break;
+        case LIBPXL_MOUSEMOVE:
+            mouse_x = event->x;
+            mouse_y = event->y;
+            break;
+        default:
+            break;
+    }
+}
+
 static int run(void) {
-    return libpxl_run("libpxl demo", WIDTH, HEIGHT, draw);
+    return libpxl_run("libpxl demo", WIDTH, HEIGHT, draw, input);
 }
 
 #if defined(_WIN32)
