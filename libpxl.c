@@ -6,10 +6,14 @@
 #define LIBPXL_KEY_STATE_MAX 0x200
 #define LIBPXL_BUTTON_STATE_MAX 8
 
+static libpxl_backend *backend;
 static uint32_t *pixels;
+static uint32_t *owned_pixels;
+static uint32_t *app_pixels;
 static int width;
 static int height;
-static int running;
+static int opened;
+static int quit_requested;
 static int fps = 60;
 static int focused = 1;
 static uint8_t key_state[LIBPXL_KEY_STATE_MAX];
@@ -19,6 +23,15 @@ static int mouse_y;
 static int mods;
 static libpxl_draw_fn draw_fn;
 static libpxl_event_fn event_fn;
+static const char *error_message;
+
+static void set_error(const char *message) {
+    error_message = message;
+}
+
+const char *libpxl_error(void) {
+    return error_message;
+}
 
 uint32_t *libpxl_pixels(void) {
     return pixels;
@@ -33,11 +46,15 @@ int libpxl_height(void) {
 }
 
 void libpxl_quit(void) {
-    running = 0;
+    quit_requested = 1;
 }
 
 void libpxl_set_fps(int fps_) {
     fps = fps_;
+}
+
+void libpxl_set_event_fn(libpxl_event_fn event) {
+    event_fn = event;
 }
 
 uint64_t libpxl_time(void) {
@@ -161,50 +178,139 @@ static void release_all_input(void) {
     }
 }
 
-int libpxl_run(const char *title, int width_, int height_, libpxl_draw_fn draw, libpxl_event_fn event) {
-    uint64_t deadline;
+void libpxl_set_pixels(uint32_t *buffer) {
     size_t bytes;
 
-    if (!draw || width_ <= 0 || height_ <= 0) {
-        return 1;
+    app_pixels = buffer;
+    if (!opened) {
+        pixels = buffer;
+        return;
     }
-    bytes = (size_t)width_ * (size_t)height_ * sizeof(*pixels);
-    pixels = malloc(bytes);
-    if (!pixels) {
-        return 1;
+    if (buffer) {
+        pixels = buffer;
+        return;
     }
-    memset(pixels, 0, bytes); /* no uninitialized first frame */
+    if (!owned_pixels) {
+        bytes = (size_t)width * (size_t)height * sizeof(*pixels);
+        owned_pixels = malloc(bytes);
+        if (!owned_pixels) {
+            set_error("libpxl_set_pixels: out of memory");
+            return;
+        }
+        memset(owned_pixels, 0, bytes);
+    }
+    pixels = owned_pixels;
+}
+
+int libpxl_open(const char *title, int width_, int height_) {
+    size_t bytes;
+
+    if (!title || width_ <= 0 || height_ <= 0) {
+        set_error("libpxl_open: invalid arguments");
+        return LIBPXL_ERR_ARGUMENT;
+    }
+    if (opened) {
+        set_error("libpxl_open: a window is already open");
+        return LIBPXL_ERR_ALREADY_OPEN;
+    }
+    set_error(NULL);
+    if (app_pixels) {
+        pixels = app_pixels;
+    } else {
+        bytes = (size_t)width_ * (size_t)height_ * sizeof(*pixels);
+        owned_pixels = malloc(bytes);
+        if (!owned_pixels) {
+            set_error("libpxl_open: out of memory");
+            return LIBPXL_ERR_MEMORY;
+        }
+        memset(owned_pixels, 0, bytes); /* no uninitialized first frame */
+        pixels = owned_pixels;
+    }
     width = width_;
     height = height_;
+    reset_input_state();
+    quit_requested = 0;
+    backend = libpxl_backend_open(title, width, height);
+    if (!backend) {
+        free(owned_pixels);
+        owned_pixels = NULL;
+        pixels = NULL;
+        width = 0;
+        height = 0;
+        set_error(libpxl_backend_error());
+        if (!error_message) {
+            set_error("libpxl_open: the platform backend failed");
+        }
+        return LIBPXL_ERR_BACKEND;
+    }
+    opened = 1;
+    return LIBPXL_OK;
+}
+
+int libpxl_poll(void) {
+    libpxl_event event;
+
+    if (!opened) {
+        set_error("libpxl_poll: no window is open");
+        return -1;
+    }
+    while (libpxl_backend_poll(backend, &event)) {
+        if (event.type == LIBPXL_FOCUSLOST) {
+            release_all_input();
+        }
+        update_state(&event);
+        if (event.type == LIBPXL_QUIT) {
+            quit_requested = 1;
+        }
+        if (event_fn) {
+            event_fn(&event);
+        }
+    }
+    return quit_requested ? 0 : 1;
+}
+
+void libpxl_present(void) {
+    if (!opened) {
+        set_error("libpxl_present: no window is open");
+        return;
+    }
+    libpxl_backend_present(backend, pixels, width, height);
+}
+
+void libpxl_close(void) {
+    if (!opened) {
+        return;
+    }
+    libpxl_backend_close(backend);
+    backend = NULL;
+    opened = 0;
+    free(owned_pixels);
+    owned_pixels = NULL;
+    pixels = NULL;
+    width = 0;
+    height = 0;
+    quit_requested = 0;
+    reset_input_state();
+}
+
+int libpxl_run(const char *title, int width, int height, libpxl_draw_fn draw, libpxl_event_fn event) {
+    int status;
+    uint64_t deadline;
+
+    if (!draw) {
+        set_error("libpxl_run: the draw callback is required");
+        return LIBPXL_ERR_ARGUMENT;
+    }
+    status = libpxl_open(title, width, height);
+    if (status != LIBPXL_OK) {
+        return status;
+    }
     draw_fn = draw;
     event_fn = event;
-    reset_input_state();
-    running = 1;
-    if (!libpxl_backend_open(title, width, height)) {
-        free(pixels);
-        pixels = NULL;
-        return 1;
-    }
     deadline = libpxl_time();
-    while (running) {
-        libpxl_event event;
-        while (libpxl_backend_poll(&event)) {
-            if (event.type == LIBPXL_FOCUSLOST) {
-                release_all_input();
-            }
-            update_state(&event);
-            if (event.type == LIBPXL_QUIT) {
-                running = 0;
-            }
-            if (event_fn) {
-                event_fn(&event);
-            }
-        }
-        if (!running) {
-            break;
-        }
+    while ((status = libpxl_poll()) > 0) {
         draw_fn();
-        libpxl_backend_present(pixels, width, height);
+        libpxl_present();
         if (fps > 0) {
             uint64_t frame_ms = (uint64_t)(1000 / fps);
             uint64_t now;
@@ -219,8 +325,6 @@ int libpxl_run(const char *title, int width_, int height_, libpxl_draw_fn draw, 
             deadline = libpxl_time();
         }
     }
-    libpxl_backend_close();
-    free(pixels);
-    pixels = NULL;
-    return 0;
+    libpxl_close();
+    return (status < 0) ? LIBPXL_ERR_NOT_OPEN : LIBPXL_OK;
 }

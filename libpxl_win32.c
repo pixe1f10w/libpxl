@@ -18,41 +18,45 @@ typedef BOOL (WINAPI *libpxl_adjust_rect_dpi_fn)(LPRECT, DWORD, BOOL, DWORD, UIN
 #define DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 ((HANDLE)-4)
 #endif
 
-static HWND window;
-static int class_registered;
-static HDC back_dc;
-static HBITMAP back_bmp;
-static HBITMAP back_old_bmp;
-static int back_width;
-static int back_height;
-static LONGLONG timer_freq;
-static libpxl_event queue[EVENT_QUEUE];
-static int queue_head;
-static int queue_tail;
+struct libpxl_backend {
+    HWND window;
+    int class_registered;
+    HDC back_dc;
+    HBITMAP back_bmp;
+    HBITMAP back_old_bmp;
+    int back_width;
+    int back_height;
+    libpxl_event queue[EVENT_QUEUE];
+    int queue_head;
+    int queue_tail;
+};
 
-static void push_event(const libpxl_event *event) {
+static LONGLONG timer_freq;
+static const char *backend_error;
+
+static void push_event(libpxl_backend *backend, const libpxl_event *event) {
     int next;
-    if (event->type == LIBPXL_MOUSEMOVE && queue_head != queue_tail) {
-        int last = (queue_tail + EVENT_QUEUE - 1) % EVENT_QUEUE;
-        if (queue[last].type == LIBPXL_MOUSEMOVE) {
-            queue[last] = *event; /* keep only the newest position */
+    if (event->type == LIBPXL_MOUSEMOVE && backend->queue_head != backend->queue_tail) {
+        int last = (backend->queue_tail + EVENT_QUEUE - 1) % EVENT_QUEUE;
+        if (backend->queue[last].type == LIBPXL_MOUSEMOVE) {
+            backend->queue[last] = *event; /* keep only the newest position */
             return;
         }
     }
-    next = (queue_tail + 1) % EVENT_QUEUE;
-    if (next == queue_head) {
+    next = (backend->queue_tail + 1) % EVENT_QUEUE;
+    if (next == backend->queue_head) {
         return; /* full: drop */
     }
-    queue[queue_tail] = *event;
-    queue_tail = next;
+    backend->queue[backend->queue_tail] = *event;
+    backend->queue_tail = next;
 }
 
-static int pop_event(libpxl_event *event) {
-    if (queue_head == queue_tail) {
+static int pop_event(libpxl_backend *backend, libpxl_event *event) {
+    if (backend->queue_head == backend->queue_tail) {
         return 0;
     }
-    *event = queue[queue_head];
-    queue_head = (queue_head + 1) % EVENT_QUEUE;
+    *event = backend->queue[backend->queue_head];
+    backend->queue_head = (backend->queue_head + 1) % EVENT_QUEUE;
     return 1;
 }
 
@@ -171,52 +175,56 @@ static int translate_key(WPARAM key, LPARAM lparam) {
     return LIBPXL_KEY_UNKNOWN;
 }
 
-static void backbuffer_destroy(void) {
-    if (back_dc) {
-        if (back_old_bmp) {
-            SelectObject(back_dc, back_old_bmp);
+static void backbuffer_destroy(libpxl_backend *backend) {
+    if (backend->back_dc) {
+        if (backend->back_old_bmp) {
+            SelectObject(backend->back_dc, backend->back_old_bmp);
         }
-        if (back_bmp) {
-            DeleteObject(back_bmp);
+        if (backend->back_bmp) {
+            DeleteObject(backend->back_bmp);
         }
-        DeleteDC(back_dc);
+        DeleteDC(backend->back_dc);
     }
-    back_dc = NULL;
-    back_bmp = NULL;
-    back_old_bmp = NULL;
-    back_width = 0;
-    back_height = 0;
+    backend->back_dc = NULL;
+    backend->back_bmp = NULL;
+    backend->back_old_bmp = NULL;
+    backend->back_width = 0;
+    backend->back_height = 0;
 }
 
-static int backbuffer_create(int width, int height) {
+static int backbuffer_create(libpxl_backend *backend, int width, int height) {
     HDC hdc;
-    if (back_dc && back_width == width && back_height == height) {
+    if (backend->back_dc && backend->back_width == width && backend->back_height == height) {
         return 1;
     }
-    backbuffer_destroy();
-    hdc = GetDC(window);
+    backbuffer_destroy(backend);
+    hdc = GetDC(backend->window);
     if (!hdc) {
         return 0;
     }
-    back_dc = CreateCompatibleDC(hdc);
-    back_bmp = CreateCompatibleBitmap(hdc, width, height);
-    ReleaseDC(window, hdc);
-    if (!back_dc || !back_bmp) {
-        backbuffer_destroy();
+    backend->back_dc = CreateCompatibleDC(hdc);
+    backend->back_bmp = CreateCompatibleBitmap(hdc, width, height);
+    ReleaseDC(backend->window, hdc);
+    if (!backend->back_dc || !backend->back_bmp) {
+        backbuffer_destroy(backend);
         return 0;
     }
-    back_old_bmp = SelectObject(back_dc, back_bmp);
-    back_width = width;
-    back_height = height;
+    backend->back_old_bmp = SelectObject(backend->back_dc, backend->back_bmp);
+    backend->back_width = width;
+    backend->back_height = height;
     return 1;
 }
 
-static void blit(HDC hdc, const uint32_t *pixels, int width, int height) {
+/* the framebuffer is scaled with nearest neighbors, centered and letterboxed */
+static void blit(HDC hdc, libpxl_backend *backend, const uint32_t *pixels, int width, int height) {
     struct {
         BITMAPINFOHEADER header;
         RGBQUAD colors[3];
     } bi;
-    if (!backbuffer_create(width, height)) {
+    RECT client;
+    int cw, ch, dw, dh, dx, dy;
+
+    if (!backbuffer_create(backend, width, height)) {
         return;
     }
     memset(&bi, 0, sizeof(bi));
@@ -227,11 +235,49 @@ static void blit(HDC hdc, const uint32_t *pixels, int width, int height) {
     bi.header.biBitCount = 32;
     bi.header.biCompression = BI_BITFIELDS;
     bi.colors[0].rgbRed = bi.colors[1].rgbGreen = bi.colors[2].rgbBlue = 0xff;
-    SetDIBitsToDevice(back_dc, 0, 0, width, height, 0, 0, 0, height, (void *)pixels, (BITMAPINFO *)&bi, DIB_RGB_COLORS);
-    BitBlt(hdc, 0, 0, width, height, back_dc, 0, 0, SRCCOPY);
+    SetDIBitsToDevice(backend->back_dc, 0, 0, width, height, 0, 0, 0, height, (void *)pixels, (BITMAPINFO *)&bi, DIB_RGB_COLORS);
+
+    GetClientRect(backend->window, &client);
+    cw = client.right - client.left;
+    ch = client.bottom - client.top;
+    if (cw <= 0 || ch <= 0) {
+        return;
+    }
+    dw = width;
+    dh = height;
+    if (cw >= width && ch >= height) {
+        int sx = cw / width;
+        int sy = ch / height;
+        int s = (sx < sy) ? sx : sy;
+        if (s > 1) {
+            dw = width * s; /* crisp integer scale */
+            dh = height * s;
+        }
+    } else {
+        double fx = (double)cw / (double)width;
+        double fy = (double)ch / (double)height;
+        double f = (fx < fy) ? fx : fy;
+        dw = (int)((double)width * f + 0.5);
+        dh = (int)((double)height * f + 0.5);
+        if (dw < 1) {
+            dw = 1;
+        }
+        if (dh < 1) {
+            dh = 1;
+        }
+    }
+    dx = (cw - dw) / 2;
+    dy = (ch - dh) / 2;
+    if (dx == 0 && dy == 0 && dw == cw && dh == ch) {
+        BitBlt(hdc, 0, 0, width, height, backend->back_dc, 0, 0, SRCCOPY);
+    } else {
+        PatBlt(hdc, 0, 0, cw, ch, BLACKNESS); /* letterbox */
+        SetStretchBltMode(hdc, COLORONCOLOR);
+        StretchBlt(hdc, dx, dy, dw, dh, backend->back_dc, 0, 0, width, height, SRCCOPY);
+    }
 }
 
-static void push_mouse_button(libpxl_event_type type, int button, int x, int y, int mods) {
+static void push_mouse_button(libpxl_backend *backend, libpxl_event_type type, int button, int x, int y, int mods) {
     libpxl_event event;
     memset(&event, 0, sizeof(event));
     event.type = type;
@@ -239,73 +285,95 @@ static void push_mouse_button(libpxl_event_type type, int button, int x, int y, 
     event.x = x;
     event.y = y;
     event.mods = mods;
-    push_event(&event);
+    push_event(backend, &event);
 }
 
-static void push_key(libpxl_event_type type, int key, int mods, int repeat) {
+static void push_key(libpxl_backend *backend, libpxl_event_type type, int key, int mods, int repeat) {
     libpxl_event event;
     memset(&event, 0, sizeof(event));
     event.type = type;
     event.key = key;
     event.mods = mods;
     event.repeat = repeat;
-    push_event(&event);
+    push_event(backend, &event);
+}
+
+static void push_resize(libpxl_backend *backend, int width, int height) {
+    libpxl_event event;
+    memset(&event, 0, sizeof(event));
+    event.type = LIBPXL_RESIZE;
+    event.x = width;
+    event.y = height;
+    push_event(backend, &event);
 }
 
 LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    libpxl_backend *backend = (libpxl_backend *)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+    if (!backend) {
+        return DefWindowProc(hwnd, msg, wParam, lParam); /* during creation */
+    }
     switch (msg) {
         case WM_PAINT: {
                 PAINTSTRUCT ps;
                 HDC hdc = BeginPaint(hwnd, &ps);
                 const uint32_t *pixels = libpxl_pixels();
                 if (pixels) {
-                    blit(hdc, pixels, libpxl_width(), libpxl_height());
+                    blit(hdc, backend, pixels, libpxl_width(), libpxl_height());
                 }
                 EndPaint(hwnd, &ps);
             }
             return 0;
         case WM_ERASEBKGND:
             return 1; /* the framebuffer covers the client area */
+        case WM_SIZE: {
+            int cw = LOWORD(lParam);
+            int ch = HIWORD(lParam);
+            if (cw > 0 && ch > 0) {
+                push_resize(backend, cw, ch);
+            }
+        }
+            return 0;
         case WM_KEYDOWN:
         case WM_KEYUP: {
             int repeat = (msg == WM_KEYDOWN) ? (int)(((unsigned int)lParam >> 30) & 1) : 0;
-            push_key((msg == WM_KEYDOWN) ? LIBPXL_KEYDOWN : LIBPXL_KEYUP,
+            push_key(backend, (msg == WM_KEYDOWN) ? LIBPXL_KEYDOWN : LIBPXL_KEYUP,
                      translate_key(wParam, lParam), current_mods(), repeat);
         }
             return 0;
         case WM_SYSKEYDOWN:
         case WM_SYSKEYUP: {
             int repeat = (msg == WM_SYSKEYDOWN) ? (int)(((unsigned int)lParam >> 30) & 1) : 0;
-            push_key((msg == WM_SYSKEYDOWN) ? LIBPXL_KEYDOWN : LIBPXL_KEYUP,
+            push_key(backend, (msg == WM_SYSKEYDOWN) ? LIBPXL_KEYDOWN : LIBPXL_KEYUP,
                      translate_key(wParam, lParam), current_mods(), repeat);
         }
             return DefWindowProc(hwnd, msg, wParam, lParam); /* keep Alt+F4 working */
         case WM_LBUTTONDOWN:
-            push_mouse_button(LIBPXL_MOUSEDOWN, 1, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), current_mods());
+            push_mouse_button(backend, LIBPXL_MOUSEDOWN, 1, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), current_mods());
             return 0;
         case WM_LBUTTONUP:
-            push_mouse_button(LIBPXL_MOUSEUP, 1, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), current_mods());
+            push_mouse_button(backend, LIBPXL_MOUSEUP, 1, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), current_mods());
             return 0;
         case WM_MBUTTONDOWN:
-            push_mouse_button(LIBPXL_MOUSEDOWN, 2, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), current_mods());
+            push_mouse_button(backend, LIBPXL_MOUSEDOWN, 2, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), current_mods());
             return 0;
         case WM_MBUTTONUP:
-            push_mouse_button(LIBPXL_MOUSEUP, 2, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), current_mods());
+            push_mouse_button(backend, LIBPXL_MOUSEUP, 2, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), current_mods());
             return 0;
         case WM_RBUTTONDOWN:
-            push_mouse_button(LIBPXL_MOUSEDOWN, 3, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), current_mods());
+            push_mouse_button(backend, LIBPXL_MOUSEDOWN, 3, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), current_mods());
             return 0;
         case WM_RBUTTONUP:
-            push_mouse_button(LIBPXL_MOUSEUP, 3, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), current_mods());
+            push_mouse_button(backend, LIBPXL_MOUSEUP, 3, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), current_mods());
             return 0;
         case WM_XBUTTONDOWN:
         case WM_XBUTTONUP:
-            push_mouse_button((msg == WM_XBUTTONDOWN) ? LIBPXL_MOUSEDOWN : LIBPXL_MOUSEUP,
-                              (GET_XBUTTON_WPARAM(wParam) == XBUTTON1) ? 4 : 5,
-                              GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), current_mods());
+            push_mouse_button(backend,
+                               (msg == WM_XBUTTONDOWN) ? LIBPXL_MOUSEDOWN : LIBPXL_MOUSEUP,
+                               (GET_XBUTTON_WPARAM(wParam) == XBUTTON1) ? 4 : 5,
+                               GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), current_mods());
             return TRUE;
         case WM_MOUSEMOVE:
-            push_mouse_button(LIBPXL_MOUSEMOVE, 0, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), current_mods());
+            push_mouse_button(backend, LIBPXL_MOUSEMOVE, 0, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), current_mods());
             return 0;
         case WM_MOUSEWHEEL: {
             libpxl_event event;
@@ -323,20 +391,19 @@ LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 event.wheel = (delta > 0) ? 1 : -1; /* fractional deltas */
             }
             event.mods = current_mods();
-            push_event(&event);
+            push_event(backend, &event);
         }
             return 0;
         case WM_SETFOCUS:
-            push_key(LIBPXL_FOCUSGAINED, 0, current_mods(), 0);
+            push_key(backend, LIBPXL_FOCUSGAINED, 0, current_mods(), 0);
             return 0;
         case WM_KILLFOCUS:
-            push_key(LIBPXL_FOCUSLOST, 0, 0, 0);
+            push_key(backend, LIBPXL_FOCUSLOST, 0, 0, 0);
             return 0;
         case WM_CLOSE:
-            DestroyWindow(window);
+            DestroyWindow(hwnd);
             return 0;
         case WM_DESTROY:
-            window = NULL;
             PostQuitMessage(0);
             return 0;
         default:
@@ -404,15 +471,25 @@ static int window_rect_for_client(int width, int height, RECT *rect) {
     return AdjustWindowRectEx(rect, WS_OVERLAPPEDWINDOW, FALSE, WS_EX_CLIENTEDGE) ? 1 : 0;
 }
 
-int libpxl_backend_open(const char *title, int width, int height) {
-    HINSTANCE instance = GetModuleHandle(NULL);
+libpxl_backend *libpxl_backend_open(const char *title, int width, int height) {
+    libpxl_backend *backend;
+    HINSTANCE instance;
     WNDCLASSEX wc;
     RECT rect;
     MSG msg;
     LARGE_INTEGER freq;
 
+    backend_error = NULL;
+    backend = (libpxl_backend *)malloc(sizeof(*backend));
+    if (!backend) {
+        backend_error = "libpxl: out of memory";
+        return NULL;
+    }
+    memset(backend, 0, sizeof(*backend));
+
     enable_dpi_awareness();
 
+    instance = GetModuleHandle(NULL);
     memset(&wc, 0, sizeof(wc));
     wc.cbSize = sizeof(WNDCLASSEX);
     wc.style = CS_VREDRAW | CS_HREDRAW;
@@ -420,64 +497,74 @@ int libpxl_backend_open(const char *title, int width, int height) {
     wc.hInstance = instance;
     wc.lpszClassName = WINDOW_CLASS;
     if (RegisterClassEx(&wc)) {
-        class_registered = 1;
+        backend->class_registered = 1;
     } else if (GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
-        return 0;
+        backend_error = "libpxl: RegisterClassEx failed";
+        free(backend);
+        return NULL;
     }
 
-    /* drop anything left over from a previous run */
+    /* drop anything left over from a previous window */
     while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
     }
-    queue_head = 0;
-    queue_tail = 0;
 
     if (!window_rect_for_client(width, height, &rect)) {
-        libpxl_backend_close();
-        return 0;
+        backend_error = "libpxl: AdjustWindowRect failed";
+        libpxl_backend_close(backend);
+        return NULL;
     }
-    window = CreateWindowEx(WS_EX_CLIENTEDGE, WINDOW_CLASS, title,
-                            WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
-                            rect.right - rect.left, rect.bottom - rect.top,
-                            NULL, NULL, instance, NULL);
-    if (!window) {
-        libpxl_backend_close();
-        return 0;
+    backend->window = CreateWindowEx(WS_EX_CLIENTEDGE, WINDOW_CLASS, title,
+                                    WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
+                                    rect.right - rect.left, rect.bottom - rect.top,
+                                    NULL, NULL, instance, NULL);
+    if (!backend->window) {
+        backend_error = "libpxl: CreateWindowEx failed";
+        libpxl_backend_close(backend);
+        return NULL;
     }
+    SetWindowLongPtr(backend->window, GWLP_USERDATA, (LONG_PTR)backend);
     if (!QueryPerformanceFrequency(&freq)) {
         timer_freq = 0;
     } else {
         timer_freq = freq.QuadPart;
     }
-    ShowWindow(window, SW_NORMAL);
-    UpdateWindow(window);
-    return 1;
+    ShowWindow(backend->window, SW_NORMAL);
+    UpdateWindow(backend->window);
+    return backend;
 }
 
-void libpxl_backend_close(void) {
-    backbuffer_destroy();
-    if (window) {
-        DestroyWindow(window);
-        window = NULL;
+void libpxl_backend_close(libpxl_backend *backend) {
+    if (!backend) {
+        return;
     }
-    if (class_registered) {
+    backbuffer_destroy(backend);
+    if (backend->window) {
+        DestroyWindow(backend->window);
+        backend->window = NULL;
+    }
+    if (backend->class_registered) {
         UnregisterClass(WINDOW_CLASS, GetModuleHandle(NULL));
-        class_registered = 0;
+        backend->class_registered = 0;
     }
-    timer_freq = 0;
+    free(backend);
 }
 
-void libpxl_backend_present(const uint32_t *pixels, int width, int height) {
-    HDC hdc = GetDC(window);
+void libpxl_backend_present(libpxl_backend *backend, const uint32_t *pixels, int width, int height) {
+    HDC hdc;
+    if (!backend || !backend->window || !pixels) {
+        return;
+    }
+    hdc = GetDC(backend->window);
     if (hdc) {
-        blit(hdc, pixels, width, height);
-        ReleaseDC(window, hdc);
+        blit(hdc, backend, pixels, width, height);
+        ReleaseDC(backend->window, hdc);
     }
 }
 
-int libpxl_backend_poll(libpxl_event *event) {
+int libpxl_backend_poll(libpxl_backend *backend, libpxl_event *event) {
     MSG msg;
     for (;;) {
-        if (pop_event(event)) {
+        if (pop_event(backend, event)) {
             return 1;
         }
         if (!PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
@@ -487,7 +574,7 @@ int libpxl_backend_poll(libpxl_event *event) {
             libpxl_event quit;
             memset(&quit, 0, sizeof(quit));
             quit.type = LIBPXL_QUIT;
-            push_event(&quit);
+            push_event(backend, &quit);
             continue;
         }
         TranslateMessage(&msg);
@@ -514,4 +601,8 @@ uint64_t libpxl_backend_time(void) {
         return 0;
     }
     return (uint64_t)(counter.QuadPart * 1000 / timer_freq);
+}
+
+const char *libpxl_backend_error(void) {
+    return backend_error;
 }
