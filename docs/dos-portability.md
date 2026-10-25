@@ -1,7 +1,9 @@
 # DOS portability assessment (OpenWatcom 2 / DJGPP)
 
-Status: investigation; the P0/P1 corrections are implemented (see
-`architecture-review.md` §7). No DOS backend yet.
+Status: implemented and verified. The DOS backend exists (`libpxl_dos.c`) and the
+P0/P1 corrections are in (see `architecture-review.md` §7). Verified on real DOS
+(DOSBox) with OpenWatcom 2: compile, link, run, VBE 32bpp mode, LFB blit, and
+text mode restore all work. The DJGPP path is written but not yet compiled.
 Date: 2026-10-24
 Companion to: `architecture-review.md`
 
@@ -247,10 +249,14 @@ app can adapt its UI at runtime instead of guessing from the platform.
      fail on warnings.
    - DOS run: DOSBox-X `-silent -c "MOUNT C ." -c "C:" -c "TEST.EXE"` (or
      DOSBox 0.74 `-exit -c ...` with `SDL_VIDEODRIVER=dummy` / xvfb on Linux).
-     The guest writes a PPM/BMP and a result file, and the host checks those,
-     because DOSBox 0.74 does not propagate the guest exit code. Keyboard input
-     can be injected with DOSBox-X `AUTOTYPE`/`ADDKEY`; mouse input has no
-     injection path, so keep mouse coverage to the null backend.
+     The guest writes a result file and the host checks it, because DOSBox 0.74
+     does not propagate the guest exit code. Keep DOS executable names within
+     8.3 (`SMOKE.EXE`, not `SMOKE_DOS.EXE`): DOSBox's shell silently fails
+     to find longer names. Copy `DOS4GW.EXE` (OpenWatcom) or `CWSDPMI.EXE`
+     (DJGPP) next to the executable, because DOSBox 0.74 does not provide the
+     extenders' DPMI hosts. Keyboard input can be injected with DOSBox-X
+     `AUTOTYPE`/`ADDKEY`; mouse input has no injection path, so keep mouse
+     coverage to the null backend.
 3. Add a `LIBPXL_DOS=ON` option that also runs a compile-only check with
    OpenWatcom 2 in its **default C89 mode** to enforce §4.1.
 
@@ -288,3 +294,37 @@ app can adapt its UI at runtime instead of guessing from the platform.
    source file with toolchain shims)? Recommended: one `libpxl_dos.c`, both
    toolchains, DJGPP as the primary CI target.
 4. Include the DOS smoke test in CI now, or after the X11 backend?
+
+---
+
+## 8. Verification results
+
+Verified on real DOS (DOSBox 0.74-3) with real compilers:
+
+- **OpenWatcom 2** (`wcc386 -bt=dos`, 32-bit DOS): library core, DOS backend
+  and the demo compile with 0 warnings and 0 errors; `wcl386 -l=dos4g` links a
+  DOS/4GW executable. `dos4gw.exe` must sit next to the executable (it ships in
+  `binw` of the distribution).
+- **DJGPP** (i586-pc-msdosdjgpp-gcc 12.2, `-Wall -Wextra -Wpedantic
+  -std=gnu99`): compiles with no warnings and links. `CWSDPMI.EXE` must sit next
+  to the executable because DOSBox 0.74 provides no DPMI host for DJGPP.
+- **Runtime smoke test** (`tests/smoke_dos.c`) passes on both toolchains:
+  `libpxl_open` returns `LIBPXL_OK`, three frames are drawn and presented, and
+  `libpxl_close` restores text mode. DOSBox reports a 320x200 32bpp linear
+  framebuffer mode, 1280 bytes per line, physical base 0xC0000000.
+- **DPMI conventions measured on DOSBox**: `INT 31h AX=0100h` returns the value
+  the BIOS accepts in `ES` and that the block is readable at in `DX`
+  (`linear = DX*16`); `AX=0101h` frees with `DX`. Hosts differ, so the DOS
+  backend keeps both values and the VBE controller-info call tries both as the
+  segment.
+- **8.3 executable names**: DOSBox's shell cannot find names whose base name
+  exceeds 8 characters. `smoke_dos.exe` (9 characters) fails silently as
+  "bad command or file name" while `smoke.exe` runs. Keep DOS executable names
+  within 8.3 (CI must use `SMOKE.EXE`).
+- **Interrupt calls**: use `int386x` with `segread()` on OpenWatcom; `intr()` with
+  `REGPACK` crashes. On DJGPP, strict `-std=c99` hides the DPMI declarations
+  (`__STRICT_ANSI__`); use `-std=gnu99`.
+
+Not yet verified: real hardware (DOSBox only), the 24/16/8bpp fallbacks (DOSBox
+picked 32bpp), the keyboard focus/quit handlers (not implemented), and DOSBox-X
+and DOSBox Staging behaviour.

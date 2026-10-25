@@ -222,8 +222,19 @@ portability assessment (`dos-portability.md` §1).
   development), `LIBPXL_PIXEL(x, y)` added and the demo uses it, and the DOS
   platform no-ops are documented in `dos-portability.md` §4.6.
 - `LIBPXL_FOCUSGAINED` was added alongside `LIBPXL_FOCUSLOST` so
-  `libpxl_focused()` has a defined transition back; `LIBPXL_RESIZE` remains P2
-  and is not emitted yet.
+  `libpxl_focused()` has a defined transition back.
+- **P2.15–P2.19**: `libpxl_open` / `libpxl_poll` / `libpxl_present` /
+  `libpxl_close` split (with `libpxl_run` kept as a wrapper), an opaque
+  `libpxl_backend` instance per window, `LIBPXL_ERR_*` codes plus
+  `libpxl_error()`, `LIBPXL_RESIZE` with letterboxed nearest-neighbor
+  presentation, and `libpxl_set_pixels()` for an app-provided framebuffer.
+- **P3.21–P3.22**: `libpxl_null.c` (test backend) with `tests/test_libpxl.c`
+  (run by CTest), the single-header amalgamation (`cmake/amalgamate.cmake` plus a
+  compile check of the generated header), and a GitHub Actions Windows workflow.
+- **P3.20 (DOS)**: `libpxl_dos.c` implements the backend with VBE (32/24/16/8bpp
+  plus mode 13h), DPMI LFB mapping, BIOS keyboard and INT 33h mouse polling,
+  PIT/BIOS-tick time and `INT 15h AH=86h` sleeps. Compile- and runtime-verified
+  on real DOS with both OpenWatcom 2 and DJGPP (see `dos-portability.md` §8).
 
-Still pending: P2 (lifecycle split, backend handle, error codes, resize) and P3
-(null backend, tests/CI, amalgamation, DOS backend).
+Still pending: the X11 and macOS backends, the DOS resize/mode-change path, and
+the CI matrix for those platforms.

@@ -1,16 +1,17 @@
-/* DOS smoke test: opens a VESA (or mode 13h) screen, draws a few frames and
-   writes a result file the host can check. Build with DJGPP or OpenWatcom 2. */
+/* DOS smoke test: opens a VESA (or mode 13h) screen, draws three frames and
+   writes result files the host can check. Build with DJGPP or OpenWatcom 2.
+   Run it in DOSBox:  dosbox -c "mount c <dir>" -c "c:" -c "SMOKE.EXE" -c "exit" -exit */
 #include <stdio.h>
 #include "libpxl.h"
 
-static FILE *log;
 static int frames;
 static int events;
 
-static void note(const char *message) {
-    if (log) {
-        fprintf(log, "%s\n", message);
-        fflush(log);
+static void mark(const char *name, int value) {
+    FILE *f = fopen(name, "w");
+    if (f) {
+        fprintf(f, "%d\n", value);
+        fclose(f);
     }
 }
 
@@ -22,7 +23,6 @@ static void draw(void) {
             LIBPXL_PIXEL(x, y) = 0x001f7f00;
         }
     }
-    frames++;
 }
 
 static void input(const libpxl_event *event) {
@@ -32,27 +32,20 @@ static void input(const libpxl_event *event) {
 
 int main(void) {
     int status;
-    log = fopen("SMOKE.TXT", "w");
-    note("start");
+    mark("SMOKE1.TXT", 1);
     libpxl_set_fps(0);
     status = libpxl_open("libpxl smoke", 320, 200);
-    note(status == LIBPXL_OK ? "open=ok" : "open=failed");
+    mark("SMOKE2.TXT", status);
     if (status == LIBPXL_OK) {
-        note("opened");
         libpxl_set_event_fn(input);
         while (libpxl_poll() > 0 && frames < 3) {
             draw();
             libpxl_present();
+            frames++;
         }
-        note("presented");
         libpxl_close();
-        note("closed");
     }
-    if (log) {
-        fprintf(log, "status=%d frames=%d events=%d\n", status, frames, events);
-        fclose(log);
-        log = NULL;
-    }
+    mark("SMOKE3.TXT", frames);
     printf("status=%d frames=%d events=%d\n", status, frames, events);
     return status;
 }
