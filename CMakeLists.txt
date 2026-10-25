@@ -11,6 +11,8 @@ endif()
 
 add_library(libpxl STATIC libpxl.c ${LIBPXL_BACKEND})
 target_include_directories(libpxl PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+# the library must stay C89-compatible for DOS toolchains; the demo may use C99
+set_target_properties(libpxl PROPERTIES C_STANDARD 90)
 if(WIN32)
     target_link_libraries(libpxl PRIVATE user32 gdi32)
 endif()
