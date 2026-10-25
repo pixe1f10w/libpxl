@@ -312,6 +312,11 @@ Verified on real DOS (DOSBox 0.74-3) with real compilers:
   `libpxl_open` returns `LIBPXL_OK`, three frames are drawn and presented, and
   `libpxl_close` restores text mode. DOSBox reports a 320x200 32bpp linear
   framebuffer mode, 1280 bytes per line, physical base 0xC0000000.
+- **Input verified**: the demo marker follows the host cursor (INT 33h position
+  plus `LIBPXL_MOUSEMOVE` events), Esc quits through the app callback, and
+  Alt+X quits through the backend. DOSBox-X injects the held form with
+  `ADDKEY p2500 l1000 a-x`; a plain `ADDKEY a-x` releases Alt too quickly for
+  the BIOS shift flags, which is why the backend also remembers the Alt key event.
 - **DPMI conventions measured on DOSBox**: `INT 31h AX=0100h` returns the value
   the BIOS accepts in `ES` and that the block is readable at in `DX`
   (`linear = DX*16`); `AX=0101h` frees with `DX`. Hosts differ, so the DOS

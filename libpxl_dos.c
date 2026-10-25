@@ -253,6 +253,7 @@ struct libpxl_backend {
     struct libpxl_dos_block vbe; /* buffer for VBE info blocks */
     /* input */
     unsigned char key_down[LIBPXL_DOS_KEY_MAX]; /* by scan code */
+    int alt_held;           /* an Alt press was seen and no release follows */
     int have_mouse;
     int have_wheel;
     int mouse_buttons;
@@ -677,12 +678,23 @@ static void libpxl_poll_keys(libpxl_backend *backend) {
         if (!_bios_keybrd(_NKEYBRD_READY)) {
             return;
         }
+        mods = libpxl_dos_mods();
         code = (unsigned long)_bios_keybrd(_NKEYBRD_READ);
         scan = (unsigned char)((code >> 8) & 0xff);
         ascii = (unsigned char)(code & 0xff);
         extended = (ascii == 0 || ascii == 0xE0) ? 1 : 0;
         key = libpxl_dos_key(scan, extended);
-        mods = libpxl_dos_mods();
+        /* the BIOS buffers the Alt press but no release, and the shift flags
+           may already show Alt released by the time the next key arrives, so
+           remember the Alt key itself as well */
+        if (key == LIBPXL_KEY_LALT || key == LIBPXL_KEY_RALT) {
+            backend->alt_held = 1;
+        } else {
+            if (backend->alt_held) {
+                mods |= LIBPXL_MOD_ALT;
+            }
+            backend->alt_held = 0;
+        }
         /* Alt+X is the documented way out on DOS */
         if (scan == 0x2D && (mods & LIBPXL_MOD_ALT)) {
             libpxl_event quit;
@@ -722,6 +734,8 @@ static int libpxl_mouse_init(libpxl_backend *backend) {
 
 static void libpxl_poll_mouse(libpxl_backend *backend) {
     struct libpxl_dos_regs regs;
+    int x;
+    int y;
     int buttons;
     int changed;
     int button;
@@ -734,9 +748,14 @@ static void libpxl_poll_mouse(libpxl_backend *backend) {
     if (!libpxl_dos_int(0x33, &regs)) {
         return;
     }
+    x = (int)(regs.ecx & 0xffff);
+    y = (int)(regs.edx & 0xffff);
     buttons = (int)(regs.ebx & 0x07);
-    backend->mouse_x = (int)(regs.ecx & 0xffff);
-    backend->mouse_y = (int)(regs.edx & 0xffff);
+    if (x != backend->mouse_x || y != backend->mouse_y) {
+        libpxl_push_mouse(backend, LIBPXL_MOUSEMOVE, 0, x, y, 0);
+    }
+    backend->mouse_x = x;
+    backend->mouse_y = y;
     changed = buttons ^ backend->mouse_buttons;
     for (button = 0; button < 3; button++) {
         int mask = 1 << button;
