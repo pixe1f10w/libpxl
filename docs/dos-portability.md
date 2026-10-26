@@ -233,32 +233,38 @@ app can adapt its UI at runtime instead of guessing from the platform.
 
 ---
 
-## 5. Build and CI proposals
+## 5. Build and CI
 
-1. Keep CMake as the single build description. Add DOS cross builds:
-   - OpenWatcom 2: `-G "Watcom WMake" -D CMAKE_SYSTEM_NAME=DOS
-     -D CMAKE_SYSTEM_PROCESSOR=x86` with
-     `CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY` (CMake ≥ 3.18).
-   - DJGPP: a custom toolchain file (`CMAKE_SYSTEM_NAME=Generic`,
-     `i386-pc-msdosdjgpp-gcc`, static-library try-compile) since CMake has no
-     DOS-GCC platform module.
-   - Both set `LIBPXL_BACKEND=libpxl_dos.c`.
-2. CI jobs:
-   - Host: existing tests plus the null-backend smoke test.
-   - DOS build: OpenWatcom 2 (Linux release tarball) and DJGPP cross toolchain;
-     fail on warnings.
-   - DOS run: DOSBox-X `-silent -c "MOUNT C ." -c "C:" -c "TEST.EXE"` (or
-     DOSBox 0.74 `-exit -c ...` with `SDL_VIDEODRIVER=dummy` / xvfb on Linux).
-     The guest writes a result file and the host checks it, because DOSBox 0.74
-     does not propagate the guest exit code. Keep DOS executable names within
-     8.3 (`SMOKE.EXE`, not `SMOKE_DOS.EXE`): DOSBox's shell silently fails
-     to find longer names. Copy `DOS4GW.EXE` (OpenWatcom) or `CWSDPMI.EXE`
-     (DJGPP) next to the executable, because DOSBox 0.74 does not provide the
-     extenders' DPMI hosts. Keyboard input can be injected with DOSBox-X
-     `AUTOTYPE`/`ADDKEY`; mouse input has no injection path, so keep mouse
-     coverage to the null backend.
-3. Add a `LIBPXL_DOS=ON` option that also runs a compile-only check with
-   OpenWatcom 2 in its **default C89 mode** to enforce §4.1.
+Implemented in the repository (see `docs/verification.md` for the exact
+commands):
+
+1. `scripts/dos_build.ps1` downloads the toolchain on first use and builds a
+   target for DOS:
+   - OpenWatcom 2 (primary): `wcc386 -bt=dos` and `wcl386 -l=dos4g`, with
+     `DOS4GW.EXE` copied next to the executable.
+   - DJGPP (secondary): the MinGW-hosted cross toolchain with
+     `-Wall -Wextra -Wpedantic -std=gnu99`, with `CWSDPMI.EXE` copied next to
+     the executable.
+   - DOS executable names stay within 8.3 (`DEMO.EXE`, `SMOKE.EXE`,
+     `KEYPROB.EXE`).
+2. `scripts/dos_run.ps1` runs a target in DOSBox 0.74, checks the result files
+   (`-Check`) and captures the emulated screen (`-Capture`), because DOSBox does
+   not pass the guest exit code to the host.
+3. `scripts/dos_input_check.ps1` checks the input path with DOSBox-X `ADDKEY`
+   injection: Esc (app callback) and Alt+X (backend policy) quit the demo, and the
+   input probe records the keys and the shift flags. Alt must be held with the
+   `l<duration>` form.
+4. `scripts/c89_check.ps1` enforces §4.1 with a strict C89 compile
+   (`clang-cl /TC /W4 /clang:-std=c89 /clang:-pedantic-errors`).
+5. CI: the `windows` job builds and runs the host tests; `c89` runs the strict
+   C89 check; `dos` and `djgpp` build for DOS and run the smoke test. Input
+   injection stays manual because DOSBox-X is not part of the runner image and
+   mouse input has no injection path.
+
+A CMake DOS cross build (`-G "Watcom WMake" -D CMAKE_SYSTEM_NAME=DOS`, with
+`CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY`) can replace the OpenWatcom path
+of the build script once it is wired into the tree; `LIBPXL_DOS` already selects
+the DOS backend in `CMakeLists.txt`.
 
 ---
 

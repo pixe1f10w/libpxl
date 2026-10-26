@@ -16,33 +16,37 @@ jobs:
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
 
+  c89:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Strict C89 check
+        shell: pwsh
+        run: ./scripts/c89_check.ps1
+
   dos:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install DOSBox and 7-Zip
+        run: choco install dosbox 7zip --yes --no-progress
+      - name: Build for DOS
+        shell: pwsh
+        run: ./scripts/dos_build.ps1 -Toolchain watcom -Target smoke
+      - name: Run on DOS
+        shell: pwsh
+        run: ./scripts/dos_run.ps1 -Target smoke -Check
+
+  djgpp:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - name: Install DOSBox
         run: choco install dosbox --yes --no-progress
-      - name: Download OpenWatcom 2
-        run: |
-          curl.exe -L --fail -o ow2.exe "https://github.com/open-watcom/open-watcom-v2/releases/download/Current-build/open-watcom-2_0-c-win-x64.exe"
-          7z x ow2.exe -oow2 -y
       - name: Build for DOS
         shell: pwsh
-        run: |
-          $env:PATH = "$PWD\ow2\binnt64;$env:PATH"
-          $env:LIB = "$PWD\ow2\lib386;$PWD\ow2\lib386\dos"
-          $env:WATCOM = "$PWD\ow2"
-          New-Item -ItemType Directory -Force -Path dos | Out-Null
-          wcc386 -bt=dos "-i=$PWD\ow2\h" -w4 "-fo=dos\libpxl.obj" libpxl.c
-          wcc386 -bt=dos "-i=$PWD\ow2\h" -w4 "-fo=dos\libpxl_dos.obj" libpxl_dos.c
-          wcc386 -bt=dos "-i=$PWD\ow2\h" "-i=." -w4 "-fo=dos\smoke.obj" tests\smoke_dos.c
-          wcl386 -bt=dos -l=dos4g "-fe=dos\SMOKE.EXE" dos\libpxl.obj dos\libpxl_dos.obj dos\smoke.obj
-          Copy-Item ow2\binw\dos4gw.exe dos
+        run: ./scripts/dos_build.ps1 -Toolchain djgpp -Target smoke
       - name: Run on DOS
         shell: pwsh
-        run: |
-          $conf = "$env:TEMP\dosbox.conf"
-          Set-Content $conf "[autoexec]`nmount c $PWD\dos`nc:`nSMOKE.EXE`nexit"
-          & "C:\Program Files (x86)\DOSBox-0.74-3\DOSBox.exe" -conf $conf -exit -noconsole
-          if ((Get-Content dos\SMOKE2.TXT) -ne "0") { throw "libpxl open failed on DOS" }
-          if ((Get-Content dos\SMOKE3.TXT) -ne "3") { throw "expected 3 frames on DOS" }
+        run: ./scripts/dos_run.ps1 -Target smoke -Check

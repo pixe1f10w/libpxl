@@ -238,3 +238,7 @@ portability assessment (`dos-portability.md` §1).
 
 Still pending: the X11 and macOS backends, the DOS resize/mode-change path, and
 the CI matrix for those platforms.
+
+The exact commands for every check (host, strict C89, DOS build and run, input
+injection) are in `docs/verification.md`; the helper scripts live in `scripts/`
+and the input probe in `tests/keyprobe_dos.c`.

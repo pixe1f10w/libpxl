@@ -1,8 +1,4 @@
 .idea/
 cmake-build*/
 build/
-
-# DOS/Watcom build artifacts
-*.obj
-*.lnk
-*.err
+build-dos/
