@@ -1,67 +1,85 @@
-#include <stdio.h>
-#include <stdint.h>
+#include "libpxl.h"
 
 #if defined(_WIN32)
 #include <windows.h>
+#endif
 
 #define WIDTH 640
 #define HEIGHT 480
-static const int width = WIDTH;
-static const int height = HEIGHT;
-static uint32_t pixels[WIDTH * HEIGHT];
+#define MARKER_MIN 2
+#define MARKER_MAX 64
 
-LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    switch (msg) {
-        // handle events
-        case WM_PAINT: {
-                PAINTSTRUCT ps;
-                HDC hdc = BeginPaint(hwnd, &ps);
-                HDC memdc = CreateCompatibleDC(hdc);
-                HBITMAP hbmp = CreateCompatibleBitmap(hdc, width, height);
-                HBITMAP oldbmp = SelectObject(memdc, hbmp);
-                BITMAPINFO bi = {{sizeof(bi), width, -height, 1, 32, BI_BITFIELDS}};
-                bi.bmiColors[0].rgbRed = bi.bmiColors[1].rgbGreen = bi.bmiColors[2].rgbBlue = 0xff;
-                SetDIBitsToDevice(memdc, 0, 0, width, height, 0, 0, 0, height, pixels, (BITMAPINFO *)&bi, DIB_RGB_COLORS);
-                BitBlt(hdc, 0, 0, width, height, memdc, 0, 0, SRCCOPY);
-                SelectObject(memdc, oldbmp);
-                DeleteObject(hbmp);
-                DeleteDC(memdc);
-                EndPaint(hwnd, &ps);
-            }
-            break;
-        case WM_CLOSE:
-            DestroyWindow(hwnd);
-            break;
-        case WM_DESTROY:
-            PostQuitMessage(0);
-            break;
-        default:
-            return DefWindowProc(hwnd, msg, wParam, lParam);
+static unsigned frame = 0;
+static int mouse_x = WIDTH / 2;
+static int mouse_y = HEIGHT / 2;
+static int marker = 8;
+
+static void draw(void) {
+    int width = libpxl_width();
+    int height = libpxl_height();
+    uint32_t marker_color = libpxl_mouse_down(1) ? 0xff0000 : 0xffffff;
+    int x;
+    int y;
+
+    for (y = 0; y < height; y++) {
+        for (x = 0; x < width; x++) {
+            uint8_t r = (uint8_t)(x + frame);
+            uint8_t g = (uint8_t)(y + frame);
+            uint8_t b = (uint8_t)((x + y + frame) >> 1);
+            LIBPXL_PIXEL(x, y) = ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
+        }
     }
-    return 0;
+    /* square under the mouse; red while the left button is down */
+    for (y = mouse_y - marker; y <= mouse_y + marker; y++) {
+        for (x = mouse_x - marker; x <= mouse_x + marker; x++) {
+            if ((unsigned)x < (unsigned)width && (unsigned)y < (unsigned)height) {
+                LIBPXL_PIXEL(x, y) = marker_color;
+            }
+        }
+    }
+    frame++;
 }
 
-int WINAPI WinMain(HINSTANCE instance, HINSTANCE prevInstance, LPSTR pCmdLine, int nCmdShow) {
-    MSG msg;
-    HINSTANCE hInstance = GetModuleHandle(NULL);
-    WNDCLASSEX wc = {0};
-    wc.cbSize = sizeof(WNDCLASSEX);
-    wc.style = CS_VREDRAW | CS_HREDRAW;
-    wc.lpfnWndProc = wndproc;
-    wc.hInstance = hInstance;
-    wc.lpszClassName = "demo";
-    RegisterClassEx(&wc);
-    HWND hwnd = CreateWindowEx(WS_EX_CLIENTEDGE, "demo", "libpxl demo",
-                               WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
-                               640, 480, NULL, NULL, hInstance, NULL);
-    ShowWindow(hwnd, SW_NORMAL);
-    UpdateWindow(hwnd);
-    while (GetMessage(&msg, NULL, 0, 0)) {
-        if (msg.message == WM_QUIT) {
-            return 0;
-        }
-        TranslateMessage(&msg);
-        DispatchMessage(&msg);
+static void input(const libpxl_event *event) {
+    switch (event->type) {
+        case LIBPXL_KEYDOWN:
+            if (event->key == LIBPXL_KEY_ESCAPE) {
+                libpxl_quit();
+            }
+            break;
+        case LIBPXL_MOUSEMOVE:
+            mouse_x = event->x;
+            mouse_y = event->y;
+            break;
+        case LIBPXL_MOUSEWHEEL:
+            marker += event->wheel * 2;
+            if (marker < MARKER_MIN) {
+                marker = MARKER_MIN;
+            }
+            if (marker > MARKER_MAX) {
+                marker = MARKER_MAX;
+            }
+            break;
+        default:
+            break;
     }
+}
+
+static int run(void) {
+    libpxl_set_fps(60);
+    return libpxl_run("libpxl demo", WIDTH, HEIGHT, draw, input);
+}
+
+#if defined(_WIN32)
+int WINAPI WinMain(HINSTANCE instance, HINSTANCE prevInstance, LPSTR pCmdLine, int nCmdShow) {
+    (void)instance;
+    (void)prevInstance;
+    (void)pCmdLine;
+    (void)nCmdShow;
+    return run();
+}
+#else
+int main(void) {
+    return run();
 }
 #endif
